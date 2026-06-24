@@ -229,8 +229,11 @@ DISPLAY_DEVICE=""
 
 if [ -n "$DISPLAY" ]; then
 	echo "### DISPLAY environmental variable is already set: \"$DISPLAY\""
-	# give docker root user X11 permissions
-	xhost +si:localuser:root || sudo xhost +si:localuser:root
+	# Give X11 access to the user the container will run as.
+	# DOCKER_USER may be "uid:gid" — extract just the user portion for xhost.
+	_XHOST_USER="${DOCKER_USER%%:*}"
+	_XHOST_USER="${_XHOST_USER:-root}"
+	xhost "+si:localuser:${_XHOST_USER}" || sudo xhost "+si:localuser:${_XHOST_USER}"
 
 	# enable SSH X11 forwarding inside container (https://stackoverflow.com/q/48235040)
 	XAUTH=/tmp/.docker.xauth
@@ -266,10 +269,27 @@ if [ -n "$SCP_UPLOAD_KEY" ] && [ -f "$SCP_UPLOAD_KEY" ]; then
 	SSH_KEY_ENV="-e SCP_UPLOAD_KEY=/root/.ssh/scp_upload_key"
 fi
 
-# extra flags
-EXTRA_FLAGS=""
+# Non-root user support.
+# Set DOCKER_USER=uid:gid (e.g. "1000:1000") or a username to run the
+# container as a non-root identity.  Omit or leave empty to run as root.
+DOCKER_USER_ARG=""
+if [ -n "$DOCKER_USER" ]; then
+	DOCKER_USER_ARG="--user $DOCKER_USER"
+fi
 
-if [ -n "$HUGGINGFACE_TOKEN" ]; then
+# Runtime secrets: prefer file-backed tokens over plain env vars so values
+# are never exposed in 'docker inspect' output or the process list.
+#
+# HuggingFace token — preferred: point HUGGINGFACE_TOKEN_FILE at a file.
+# Fallback: HUGGINGFACE_TOKEN env var (value visible in docker inspect).
+EXTRA_FLAGS=""
+HF_SECRET_VOLUME=""
+
+if [ -n "$HUGGINGFACE_TOKEN_FILE" ] && [ -f "$HUGGINGFACE_TOKEN_FILE" ]; then
+	HF_SECRET_VOLUME="-v ${HUGGINGFACE_TOKEN_FILE}:/run/secrets/huggingface_token:ro"
+	EXTRA_FLAGS="$EXTRA_FLAGS --env HF_TOKEN_FILE=/run/secrets/huggingface_token"
+	EXTRA_FLAGS="$EXTRA_FLAGS --env HUGGINGFACE_TOKEN_FILE=/run/secrets/huggingface_token"
+elif [ -n "$HUGGINGFACE_TOKEN" ]; then
 	EXTRA_FLAGS="$EXTRA_FLAGS --env HUGGINGFACE_TOKEN=$HUGGINGFACE_TOKEN"
 fi
 
@@ -354,6 +374,8 @@ if [ $SYSTEM_ARCH = "tegra-aarch64" ]; then
 		$PULSE_AUDIO_ARGS \
 		--device /dev/bus/usb \
 		$SSH_KEY_VOLUME $SSH_KEY_ENV \
+		$HF_SECRET_VOLUME \
+		$DOCKER_USER_ARG \
 		$OPTIONAL_PERMISSION_ARGS $DATA_VOLUME $DISPLAY_DEVICE $V4L2_DEVICES $I2C_DEVICES $ACM_DEVICES $JTOP_SOCKET $EXTRA_FLAGS \
 		$CONTAINER_NAME_FLAGS \
 		"${filtered_args[@]}"
@@ -373,6 +395,8 @@ elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "x86_64" ]; then
 		--device /dev/snd \
 		$PULSE_AUDIO_ARGS \
 		$SSH_KEY_VOLUME $SSH_KEY_ENV \
+		$HF_SECRET_VOLUME \
+		$DOCKER_USER_ARG \
 		$OPTIONAL_ARGS $DATA_VOLUME $DISPLAY_DEVICE $V4L2_DEVICES $I2C_DEVICES $ACM_DEVICES $JTOP_SOCKET $EXTRA_FLAGS \
 		$CONTAINER_NAME_FLAGS \
 		"${filtered_args[@]}"
