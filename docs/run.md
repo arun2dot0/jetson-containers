@@ -120,6 +120,20 @@ sudo docker run --runtime nvidia --user 1000:1000 \
 | `/data` volume writes | Depends | Host `data/` dir must be writable by the container UID |
 | Docker socket (`docker.sock`) | No | Requires `docker` group inside image |
 
+### Running package tests as non-root
+
+Package tests (`test.py` / `test.sh`) run during `docker build`, which always executes as `root` — so the build is unaffected by non-root runtime. No package test requires actual root privileges (none use `sudo`, `apt`, `modprobe`, privileged ports, or writes to system paths).
+
+The only caveat when re-running a test at runtime under `DOCKER_USER` is that a number of tests save output artifacts under `/data` (e.g. `/data/audio/tts/`, `/data/images/`). Because `/data` is a host-mounted volume, a non-root user can only write there if the **host** `data/` directory is writable by the container UID:
+
+```bash
+# make the data cache writable by your non-root UID (one-time, on the host):
+sudo chown -R 1000:1000 jetson-containers/data
+DOCKER_USER=1000:1000 jetson-containers run $(autotag piper-tts)
+```
+
+This is a volume-ownership requirement, not a privilege requirement — CUDA and the rest of each test run fine as non-root.
+
 ### Building images that support non-root
 
 Pass identity at build time via env vars and consume them in the Dockerfile:
