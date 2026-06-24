@@ -263,18 +263,31 @@ SSH_KEY_VOLUME=""
 SSH_KEY_ENV=""
 
 if [ -n "$SCP_UPLOAD_KEY" ] && [ -f "$SCP_UPLOAD_KEY" ]; then
-	# Mount SSH key to a standard location in the container
-	# Mount to /root/.ssh/scp_upload_key and update the env var to point to it
-	SSH_KEY_VOLUME="-v $SCP_UPLOAD_KEY:/root/.ssh/scp_upload_key:ro"
-	SSH_KEY_ENV="-e SCP_UPLOAD_KEY=/root/.ssh/scp_upload_key"
+	# Mount SSH key under /run/secrets/ so it is accessible regardless of
+	# which user the container runs as (avoids the /root/.ssh/ ownership issue
+	# when DOCKER_USER is set to a non-root identity).
+	SSH_KEY_VOLUME="-v $SCP_UPLOAD_KEY:/run/secrets/scp_upload_key:ro"
+	SSH_KEY_ENV="-e SCP_UPLOAD_KEY=/run/secrets/scp_upload_key"
 fi
 
 # Non-root user support.
 # Set DOCKER_USER=uid:gid (e.g. "1000:1000") or a username to run the
 # container as a non-root identity.  Omit or leave empty to run as root.
+#
+# Device access: hardware devices (/dev/snd, /dev/video*, /dev/i2c-*, etc.)
+# are owned by Linux groups inside the container.  The supplementary groups
+# below are added automatically so a non-root user can still reach them.
+# All of these groups are present in standard L4T/Ubuntu base images.
+# NOTE: CSI cameras (nvargus-daemon) require root and cannot be used with
+# DOCKER_USER — see docs/run.md for details.
 DOCKER_USER_ARG=""
 if [ -n "$DOCKER_USER" ]; then
-	DOCKER_USER_ARG="--user $DOCKER_USER"
+	DOCKER_USER_ARG="--user $DOCKER_USER \
+		--group-add video \
+		--group-add audio \
+		--group-add i2c \
+		--group-add dialout \
+		--group-add plugdev"
 fi
 
 # Runtime secrets: prefer file-backed tokens over plain env vars so values

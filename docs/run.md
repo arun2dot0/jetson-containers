@@ -56,3 +56,100 @@ If you have installed [**jetson-stats**](https://github.com/rbonghi/jetson_stats
 Check the [official documentation](https://rnext.it/jetson_stats/docker.html) for the detail.
 
 Make sure you install the same version of jetson-stats (`jtop`) both on your host and in the container.
+
+## Running as Non-Root
+
+By default all containers run as `root`. Set `DOCKER_USER` to run as a different identity:
+
+```bash
+DOCKER_USER=1000:1000 jetson-containers run $(autotag pytorch)
+# or by username (the user must exist inside the image):
+DOCKER_USER=jetson jetson-containers run $(autotag pytorch)
+```
+
+The launcher automatically adds `--group-add video --group-add audio --group-add i2c --group-add dialout --group-add plugdev` so that common hardware devices remain accessible. X11 forwarding is also updated to grant the declared user display access.
+
+### Limitations when running non-root
+
+| Feature | Root required? | Notes |
+|---------|:--------------:|-------|
+| GPU / CUDA / TensorRT | No | `--runtime nvidia` grants device access regardless of UID |
+| LLM / VLM inference | No | No hardware devices needed |
+| V4L2 cameras | No | Covered by `--group-add video` |
+| USB devices | No | Covered by `--group-add plugdev` |
+| Audio (PulseAudio) | No | Covered by `--group-add audio` |
+| I2C / serial sensors | No | Covered by `--group-add i2c` / `dialout` |
+| **CSI cameras (Argus)** | **Yes** | `nvargus-daemon` owns `/tmp/argus_socket` as root; incompatible with `DOCKER_USER` |
+| `--csi2webcam` pipeline | No (host-side) | `modprobe` runs on host; GStreamer inside container needs `video` group |
+| `/data` volume writes | Depends | Host `data/` dir must be writable by the container UID |
+| Docker socket (`docker.sock`) | No | Requires `docker` group inside image |
+
+### Building images that support non-root
+
+Pass identity at build time via env vars and consume them in the Dockerfile:
+
+```bash
+export CONTAINER_USER=jetson CONTAINER_UID=1000 CONTAINER_GID=1000
+jetson-containers build mypackage
+```
+
+These are forwarded as `--build-arg CONTAINER_USER=jetson --build-arg CONTAINER_UID=1000 --build-arg CONTAINER_GID=1000`. In the Dockerfile:
+
+```dockerfile
+ARG CONTAINER_USER=root
+ARG CONTAINER_UID=0
+ARG CONTAINER_GID=0
+
+RUN if [ "$CONTAINER_UID" != "0" ]; then \
+        groupadd -g $CONTAINER_GID $CONTAINER_USER && \
+        useradd -u $CONTAINER_UID -g $CONTAINER_GID -m $CONTAINER_USER; \
+    fi
+
+USER $CONTAINER_USER
+```
+
+Declare the supported user in package metadata so tooling can discover it:
+
+```yaml
+run_user: jetson
+```
+
+## Runtime Secrets
+
+Secrets passed as plain `--env` flags are visible in `docker inspect` output and the process list. Prefer file-backed secrets instead.
+
+### HuggingFace token
+
+```bash
+# Preferred: token stays out of docker inspect / shell history
+HUGGINGFACE_TOKEN_FILE=~/.hf_token jetson-containers run $(autotag llama3)
+
+# Fallback (backwards-compatible, token visible in docker inspect):
+HUGGINGFACE_TOKEN=hf_xxx jetson-containers run $(autotag llama3)
+```
+
+`HUGGINGFACE_TOKEN_FILE` mounts the file read-only at `/run/secrets/huggingface_token` inside the container and sets `HF_TOKEN_FILE` / `HUGGINGFACE_TOKEN_FILE` env vars pointing to it.
+
+### Build-time secrets
+
+Packages can declare secrets they need at build time. The value is never baked into an image layer:
+
+```yaml
+# in Dockerfile header or config.yaml
+secrets: [huggingface_token]
+```
+
+```bash
+export JETSON_SECRET_HUGGINGFACE_TOKEN=~/.hf_token
+jetson-containers build mypackage
+```
+
+Inside the Dockerfile, consume via `--mount=type=secret`:
+
+```dockerfile
+RUN --mount=type=secret,id=huggingface_token \
+    HF_TOKEN=$(cat /run/secrets/huggingface_token) \
+    python3 download_model.py
+```
+
+If `JETSON_SECRET_<NAME>` is not set, a warning is printed and the build continues without that secret.
