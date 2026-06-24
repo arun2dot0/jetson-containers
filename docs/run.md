@@ -69,12 +69,48 @@ DOCKER_USER=jetson jetson-containers run $(autotag pytorch)
 
 The launcher automatically adds `--group-add video --group-add audio --group-add i2c --group-add dialout --group-add plugdev` so that common hardware devices remain accessible. X11 forwarding is also updated to grant the declared user display access.
 
+### GPU access as non-root (CUDA error 801)
+
+On Jetson, the GPU/Tegra device nodes are group-owned, not world-accessible:
+
+```
+$ ls -l /dev/nvhost-gpu /dev/nvmap /dev/dri/renderD128
+crw-rw---- root video  /dev/nvhost-gpu
+crw-rw---- root video  /dev/nvmap
+crw-rw---- root render /dev/dri/renderD128
+```
+
+A non-root process that is **not** a member of these groups cannot open the nodes, and CUDA fails with:
+
+```
+error 801: operation not supported
+unexpected error from cudaGetDeviceCount()
+```
+
+`jetson-containers run` fixes this automatically: when `DOCKER_USER` is set it discovers the **numeric GIDs** that own the NVIDIA/Tegra device nodes (`/dev/nvhost*`, `/dev/nvmap`, `/dev/nvgpu/*`, `/dev/dri/render*`) and adds each via `--group-add <gid>`.
+
+> **Why numeric GIDs?** The host's `render` group GID (e.g. `104`) usually does **not** match the container's `render` GID. Adding by name (`--group-add render`) would grant the wrong GID and silently fail. The numeric GID matches the bind-mounted device node exactly.
+
+If you run the container with your **own** `docker run` (not `jetson-containers run`), add the GPU device groups yourself:
+
+```bash
+# look up the GIDs that own the GPU nodes on your host:
+$ ls -ln /dev/nvhost-gpu /dev/dri/renderD128
+crw-rw---- 1 0 44  ... /dev/nvhost-gpu      # video  = 44
+crw-rw---- 1 0 104 ... /dev/dri/renderD128  # render = 104
+
+# then pass them when running as non-root:
+sudo docker run --runtime nvidia --user 1000:1000 \
+  --group-add 44 --group-add 104 \
+  -it --rm pytorch:latest python3 -c "import torch; print(torch.cuda.is_available())"
+```
+
 ### Limitations when running non-root
 
 | Feature | Root required? | Notes |
 |---------|:--------------:|-------|
-| GPU / CUDA / TensorRT | No | `--runtime nvidia` grants device access regardless of UID |
-| LLM / VLM inference | No | No hardware devices needed |
+| GPU / CUDA / TensorRT | No | Non-root needs the GPU device-node groups; `jetson-containers run` adds them automatically (see above). With your own `docker run`, add `--group-add <video-gid> --group-add <render-gid>` |
+| LLM / VLM inference | No | No hardware devices needed beyond the GPU |
 | V4L2 cameras | No | Covered by `--group-add video` |
 | USB devices | No | Covered by `--group-add plugdev` |
 | Audio (PulseAudio) | No | Covered by `--group-add audio` |

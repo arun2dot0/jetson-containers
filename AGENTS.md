@@ -166,6 +166,8 @@ DOCKER_USER=jetson ./run.sh myimage
 ```
 X11 forwarding (`xhost`) is automatically updated to grant the declared user display access.
 
+For GPU access, `run.sh` also discovers the numeric GIDs that own the NVIDIA/Tegra device nodes (`/dev/nvhost*`, `/dev/nvmap`, `/dev/nvgpu/*`, `/dev/dri/render*`) and adds them via `--group-add <gid>`. Without this, a non-root process can't open the GPU nodes and CUDA fails with error 801 (`cudaGetDeviceCount` "operation not supported"). Numeric GIDs are used because the host's `render` GID usually doesn't match the container's. See [`docs/run.md`](/docs/run.md#gpu-access-as-non-root-cuda-error-801).
+
 ### Secrets
 
 **Build-time secrets** (never baked into image layers) — declare secrets in package metadata:

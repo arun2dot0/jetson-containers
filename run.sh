@@ -275,9 +275,9 @@ fi
 # container as a non-root identity.  Omit or leave empty to run as root.
 #
 # Device access: hardware devices (/dev/snd, /dev/video*, /dev/i2c-*, etc.)
-# are owned by Linux groups inside the container.  The supplementary groups
-# below are added automatically so a non-root user can still reach them.
-# All of these groups are present in standard L4T/Ubuntu base images.
+# are owned by Linux groups inside the container.  The named supplementary
+# groups below are added automatically so a non-root user can still reach
+# them.  These GIDs match between the host and standard L4T/Ubuntu base images.
 # NOTE: CSI cameras (nvargus-daemon) require root and cannot be used with
 # DOCKER_USER — see docs/run.md for details.
 DOCKER_USER_ARG=""
@@ -288,6 +288,23 @@ if [ -n "$DOCKER_USER" ]; then
 		--group-add i2c \
 		--group-add dialout \
 		--group-add plugdev"
+
+	# GPU access for non-root users (fixes CUDA error 801, issue #1136).
+	# On Jetson the GPU/Tegra device nodes (/dev/nvhost-gpu, /dev/nvmap,
+	# /dev/nvgpu/*, /dev/dri/render*) are owned by root:video / root:render
+	# with mode 0660, so a non-root process must be a member of those groups
+	# to open them — otherwise cudaGetDeviceCount() fails with error 801.
+	#
+	# We add the *numeric* GIDs that actually own the device nodes rather than
+	# adding by name, because the host's 'render' GID frequently does NOT match
+	# the container's 'render' GID, so --group-add render would grant the wrong
+	# GID and silently fail.  Passing the numeric GID matches the bind-mounted
+	# device node exactly.  GID 0 (root-owned / world-readable nodes) is skipped.
+	GPU_DEV_GIDS=$(ls -lLn /dev/nvidia* /dev/nvhost* /dev/nvmap /dev/nvgpu/*/* /dev/dri/render* 2>/dev/null \
+		| awk 'NF>=4 && $4 ~ /^[0-9]+$/ && $4 != 0 { print $4 }' | sort -un)
+	for gid in $GPU_DEV_GIDS; do
+		DOCKER_USER_ARG="$DOCKER_USER_ARG --group-add $gid"
+	done
 fi
 
 # Runtime secrets: prefer file-backed tokens over plain env vars so values
